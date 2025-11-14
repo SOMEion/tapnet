@@ -51,7 +51,8 @@ def compute_video_motion_score(video_path, checkpoint_path, stride=8):
     # Load TAPIR model
     ckpt_state = np.load(checkpoint_path, allow_pickle=True).item()
     params, state = ckpt_state['params'], ckpt_state['state']
-    tapir = tapir_model.ParameterizedTAPIR(params, state)
+    tapir_kwargs = dict(bilinear_interp_with_depthwise_conv=False, pyramid_level=0)
+    tapir = tapir_model.ParameterizedTAPIR(params, state, tapir_kwargs=tapir_kwargs)
 
     # Sample grid of query points at frame 0
     query_points = motion_scoring.sample_grid_points(
