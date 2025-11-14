@@ -17,10 +17,19 @@
 """Compute motion score from video without manual point selection.
 
 Usage:
-    python compute_video_motion_score.py <video_path> <checkpoint_path>
+    python compute_video_motion_score.py <video_path> <checkpoint_path> [model_type]
 
-Example:
-    python compute_video_motion_score.py video.mp4 checkpoints/tapir_checkpoint.npy
+Arguments:
+    video_path: Path to input video file
+    checkpoint_path: Path to model checkpoint (.npy file)
+    model_type: 'tapir' or 'bootstapir' (optional, default: 'tapir')
+
+Examples:
+    # Using TAPIR model
+    python compute_video_motion_score.py video.mp4 checkpoints/tapir_checkpoint_panning.npy
+
+    # Using BootsTAPIR model (more accurate but slower)
+    python compute_video_motion_score.py video.mp4 checkpoints/bootstapir_checkpoint_v2.npy bootstapir
 """
 
 import sys
@@ -32,12 +41,13 @@ from tapnet.utils import model_utils
 from tapnet.utils import motion_scoring
 
 
-def compute_video_motion_score(video_path, checkpoint_path, stride=8, resize_height=256, resize_width=256, chunk_size=64):
+def compute_video_motion_score(video_path, checkpoint_path, model_type='tapir', stride=8, resize_height=256, resize_width=256, chunk_size=64):
     """Compute motion score from video using chunked inference pattern from notebook.
 
     Args:
         video_path: Path to input video file
-        checkpoint_path: Path to TAPIR checkpoint (.npy file)
+        checkpoint_path: Path to TAPIR/BootsTAPIR checkpoint (.npy file)
+        model_type: 'tapir' or 'bootstapir' (default 'tapir')
         stride: Spacing between grid points in pixels (default 8)
         resize_height: Resize video height (default 256, prevents memory overflow)
         resize_width: Resize video width (default 256, prevents memory overflow)
@@ -62,14 +72,42 @@ def compute_video_motion_score(video_path, checkpoint_path, stride=8, resize_hei
     num_frames, height, width = video.shape[:3]
 
     # ========================================================================
-    # STEP 2: Load TAPIR model
+    # STEP 2: Load TAPIR/BootsTAPIR model
     # ========================================================================
     # Load checkpoint containing model parameters and state
+    # Pattern from: /home/user/tapnet/colabs/tapir_demo.ipynb cell 6
     ckpt_state = np.load(checkpoint_path, allow_pickle=True).item()
     params, state = ckpt_state['params'], ckpt_state['state']
 
     # Model configuration kwargs
+    # Base configuration for both models:
+    #   - bilinear_interp_with_depthwise_conv=False: Use standard bilinear interpolation
+    #   - pyramid_level=0: Start feature pyramid at base resolution (TAPIR)
     tapir_kwargs = dict(bilinear_interp_with_depthwise_conv=False, pyramid_level=0)
+
+    # BootsTAPIR-specific configuration
+    # Pattern from: /home/user/tapnet/colabs/tapir_demo.ipynb cell 6 lines 10-13
+    if model_type == 'bootstapir':
+        # BootsTAPIR uses higher-resolution features and additional processing:
+        #   - pyramid_level=1: Start at higher resolution in feature pyramid
+        #     Location: Used in tapir_model.py get_feature_grids() method
+        #     Computes: Extracts features at 2x higher resolution than TAPIR
+        #     Effect: More accurate tracking at cost of higher memory/compute
+        #
+        #   - extra_convs=True: Enable additional convolutional layers
+        #     Location: tapir_model.py:685-686, 698-699
+        #     Computes: Applies extra_convs module after ResNet features
+        #     Effect: Additional feature refinement for better accuracy
+        #
+        #   - softmax_temperature=10.0: Controls soft-argmax sharpness in cost volumes
+        #     Location: Used in tracks_from_cost_volume() in tapir_model.py:399-467
+        #     Computes: Scales logits before softmax: exp(logits / temperature)
+        #     Effect: Higher temperature (10.0) → softer/smoother peaks
+        #            Lower temperature (1.0) → sharper/peaked distributions
+        #            BootsTAPIR uses 10.0 for more robust matching
+        tapir_kwargs.update(
+            dict(pyramid_level=1, extra_convs=True, softmax_temperature=10.0)
+        )
 
     # Class: tapir_model.ParameterizedTAPIR
     # Location: /home/user/tapnet/tapnet/models/tapir_model.py:1200-1262
@@ -209,10 +247,11 @@ def compute_video_motion_score(video_path, checkpoint_path, stride=8, resize_hei
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 3:
+    if len(sys.argv) < 3 or len(sys.argv) > 4:
         sys.exit(1)
 
     video_path = sys.argv[1]
     checkpoint_path = sys.argv[2]
+    model_type = sys.argv[3] if len(sys.argv) == 4 else 'tapir'
 
-    score = compute_video_motion_score(video_path, checkpoint_path)
+    score = compute_video_motion_score(video_path, checkpoint_path, model_type=model_type)

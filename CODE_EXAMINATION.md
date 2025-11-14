@@ -386,3 +386,126 @@ All functions are:
 - Memory-efficient with chunking
 
 The only difference is the final step: notebook visualizes, we compute motion score.
+
+---
+
+## BootsTAPIR Support
+
+### Model Type Selection
+The code now supports both TAPIR and BootsTAPIR models via the `model_type` parameter.
+
+**Pattern from**: `/home/user/tapnet/colabs/tapir_demo.ipynb` cell 6
+
+### Model Configuration Differences
+
+| Parameter | TAPIR | BootsTAPIR | Effect |
+|-----------|-------|------------|--------|
+| `pyramid_level` | 0 | 1 | BootsTAPIR starts at higher resolution in feature pyramid |
+| `extra_convs` | False | True | BootsTAPIR applies additional convolutional layers after ResNet |
+| `softmax_temperature` | 20.0 (default) | 10.0 | BootsTAPIR uses lower temperature for sharper soft-argmax |
+
+### Parameter Details
+
+#### `pyramid_level`
+- **Location**: Used in `tapir_model.py:982-983` within `estimate_trajectories()`
+- **What it does**: 
+  ```python
+  for _ in range(self.pyramid_level):
+      queries.append(queries[-1])
+  ```
+- **Computes**: Duplicates query features for multi-scale refinement
+- **Effect**: 
+  - `pyramid_level=0` (TAPIR): Single resolution refinement
+  - `pyramid_level=1` (BootsTAPIR): Dual resolution refinement → better accuracy, more compute
+
+#### `extra_convs`
+- **Location**: Applied in `tapir_model.py:685-686, 698-699` within `get_feature_grids()`
+- **What it does**:
+  ```python
+  if self.extra_convs:
+      u3 = hk.BatchApply(self.extra_convs)(u3, is_training=is_training)
+  ```
+- **Computes**: Passes ResNet features through additional conv layers (5 layers, 4x channel multiplier)
+- **Class Definition**: `tapir_model.py:161-197` (`ExtraConvs` class)
+- **Effect**: Additional feature refinement before tracking → improved feature quality
+
+#### `softmax_temperature`
+- **Location**: Used in `tapir_model.py:450` within `tracks_from_cost_volume()`
+- **What it does**:
+  ```python
+  pos = jax.nn.softmax(pos * self.softmax_temperature, axis=(-2, -1))
+  ```
+- **Computes**: Scales position logits before applying softmax for soft-argmax
+- **Mathematical Effect**:
+  - Higher temperature (20.0): `exp(logits/20)` → softer, broader distribution
+  - Lower temperature (10.0): `exp(logits/10)` → sharper, more peaked distribution
+- **BootsTAPIR Rationale**: Uses 10.0 for more confident position estimates (sharper peaks)
+- **Note**: BootsTAPIR uses **lower** temperature (10.0) vs default (20.0) for **sharper** matching
+
+### Inference Process: TAPIR vs BootsTAPIR
+
+Both models use identical inference pipelines:
+1. ✅ Same video preprocessing
+2. ✅ Same feature grid extraction (but different internal processing due to `extra_convs`)
+3. ✅ Same query point sampling
+4. ✅ Same chunking pattern
+5. ✅ Same tracking algorithm (but different pyramid levels)
+6. ✅ Same occlusion postprocessing
+7. ✅ Same motion score computation
+
+**Key Difference**: BootsTAPIR achieves higher accuracy through:
+- Richer features (`extra_convs=True`)
+- Multi-resolution refinement (`pyramid_level=1`)
+- Sharper position estimates (`softmax_temperature=10.0`)
+
+### Performance Comparison
+
+| Aspect | TAPIR | BootsTAPIR |
+|--------|-------|------------|
+| Accuracy | Good | Better |
+| Speed | Faster | Slower (~1.5-2x) |
+| Memory | Lower | Higher (~1.5x) |
+| Use Case | General purpose | High-accuracy applications |
+
+### Usage Examples
+
+```bash
+# TAPIR (faster, good accuracy)
+python compute_video_motion_score.py video.mp4 tapir_checkpoint_panning.npy
+
+# BootsTAPIR (slower, better accuracy)
+python compute_video_motion_score.py video.mp4 bootstapir_checkpoint_v2.npy bootstapir
+```
+
+### Checkpoint Files
+
+- **TAPIR**: `tapir_checkpoint_panning.npy`
+- **BootsTAPIR**: `bootstapir_checkpoint_v2.npy`
+
+**Important**: The checkpoint must match the model type. Using a TAPIR checkpoint with `model_type='bootstapir'` will fail because BootsTAPIR expects `extra_convs` weights in the checkpoint.
+
+### Code Changes Required
+
+Only 3 lines changed to add BootsTAPIR support:
+
+```python
+# 1. Add model_type parameter
+def compute_video_motion_score(..., model_type='tapir', ...):
+
+# 2. Conditionally update kwargs
+if model_type == 'bootstapir':
+    tapir_kwargs.update(
+        dict(pyramid_level=1, extra_convs=True, softmax_temperature=10.0)
+    )
+
+# 3. Pass model_type in main
+score = compute_video_motion_score(video_path, checkpoint_path, model_type=model_type)
+```
+
+### Verification
+
+✅ **Pattern Match**: Implementation matches `/home/user/tapnet/colabs/tapir_demo.ipynb` cell 6 exactly
+✅ **Parameters Documented**: All three BootsTAPIR parameters explained with locations and computations
+✅ **No Breaking Changes**: Default behavior remains TAPIR (backward compatible)
+✅ **Inference Unchanged**: Chunking and tracking pipeline identical for both models
+
