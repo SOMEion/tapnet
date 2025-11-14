@@ -32,7 +32,7 @@ from tapnet.utils import model_utils
 from tapnet.utils import motion_scoring
 
 
-def compute_video_motion_score(video_path, checkpoint_path, stride=8, resize_height=256, resize_width=256, query_chunk_size=64):
+def compute_video_motion_score(video_path, checkpoint_path, stride=8, resize_height=256, resize_width=256):
     """Compute motion score from video.
 
     Args:
@@ -41,7 +41,6 @@ def compute_video_motion_score(video_path, checkpoint_path, stride=8, resize_hei
         stride: Spacing between grid points in pixels (default 8)
         resize_height: Resize video height (default 256, prevents memory overflow)
         resize_width: Resize video width (default 256, prevents memory overflow)
-        query_chunk_size: Process points in chunks to save memory (default 64)
 
     Returns:
         Single scalar motion score (higher = more motion)
@@ -59,45 +58,27 @@ def compute_video_motion_score(video_path, checkpoint_path, stride=8, resize_hei
     tapir_kwargs = dict(bilinear_interp_with_depthwise_conv=False, pyramid_level=0)
     tapir = tapir_model.ParameterizedTAPIR(params, state, tapir_kwargs=tapir_kwargs)
 
-    # Preprocess video for model
-    frames = model_utils.preprocess_frames(video)
-    frames = frames[None]  # Add batch dimension
-
-    # Pre-compute feature grids once for efficiency
-    feature_grids = tapir.get_feature_grids(frames, is_training=False)
-
     # Sample grid of query points at frame 0 (after resize)
     query_points = motion_scoring.sample_grid_points(
         frame_idx=0, height=height, width=width, stride=stride
     )
 
-    # Process in chunks to save memory
-    num_points = query_points.shape[0]
-    all_tracks = []
-    all_occlusions = []
-    all_expected_dist = []
+    # Preprocess video for model
+    frames = model_utils.preprocess_frames(video)
+    frames = frames[None]  # Add batch dimension
+    query_points = query_points[None].astype(np.float32)  # Add batch dimension
 
-    for i in range(0, num_points, query_chunk_size):
-        query_chunk = query_points[i:i + query_chunk_size]
-        query_chunk = query_chunk[None].astype(np.float32)  # Add batch dimension
+    # Run TAPIR inference
+    outputs = tapir(
+        video=frames,
+        query_points=query_points,
+        is_training=False,
+    )
 
-        # Run TAPIR inference on chunk
-        outputs = tapir(
-            video=frames,
-            query_points=query_chunk,
-            is_training=False,
-            query_chunk_size=query_chunk_size,
-            feature_grids=feature_grids,
-        )
-
-        all_tracks.append(outputs['tracks'][0])
-        all_occlusions.append(outputs['occlusion'][0])
-        all_expected_dist.append(outputs['expected_dist'][0])
-
-    # Concatenate all chunks
-    tracks = np.concatenate(all_tracks, axis=0)
-    occlusions = np.concatenate(all_occlusions, axis=0)
-    expected_dist = np.concatenate(all_expected_dist, axis=0)
+    # Extract predictions
+    tracks = outputs['tracks'][0]  # Remove batch dimension
+    occlusions = outputs['occlusion'][0]
+    expected_dist = outputs['expected_dist'][0]
 
     # Combine occlusion and uncertainty into binary occlusion mask
     occluded = model_utils.postprocess_occlusions(occlusions, expected_dist)
