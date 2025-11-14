@@ -19,34 +19,31 @@ import jax.numpy as jnp
 import numpy as np
 
 
-def create_grid_query_points(num_frames, height, width, grid_size=32):
-    """Create a grid of query points at frame 0.
+def sample_grid_points(frame_idx, height, width, stride=8):
+    """Sample grid points with (time, height, width) order.
 
     Args:
-        num_frames: Number of frames in video
-        height: Video height
-        width: Video width
-        grid_size: Number of points per dimension (default 32x32 = 1024 points)
+        frame_idx: Frame index to query from (typically 0)
+        height: Video height in pixels
+        width: Video width in pixels
+        stride: Spacing between points in pixels (default 8)
+                stride=8 gives ~32x32 grid for 256x256 video
+                stride=1 gives dense per-pixel grid
 
     Returns:
-        Query points array of shape [grid_size*grid_size, 3] with format [t, y, x]
+        Query points array of shape [num_points, 3] with format [t, y, x]
     """
-    # Create normalized grid centers (0 to 1)
-    grid_centers = np.arange(grid_size) / grid_size + 1.0 / (2.0 * grid_size)
+    # Create grid starting at stride//2 with spacing of stride
+    points = np.mgrid[stride // 2 : height : stride, stride // 2 : width : stride]
+    points = points.transpose(1, 2, 0)
+    out_height, out_width = points.shape[0:2]
 
-    # Create meshgrid in pixel coordinates
-    y_coords = grid_centers * height
-    x_coords = grid_centers * width
-    query_y, query_x = np.meshgrid(y_coords, x_coords, indexing='ij')
+    # Add frame index as first coordinate
+    frame_idx = np.ones((out_height, out_width, 1)) * frame_idx
+    points = np.concatenate((frame_idx, points), axis=-1).astype(np.int32)
+    points = points.reshape(-1, 3)  # [num_points, 3]
 
-    # All points start at frame 0
-    query_t = np.zeros_like(query_x)
-
-    # Stack and reshape to [num_points, 3]
-    query_points = np.stack([query_t, query_y, query_x], axis=-1)
-    query_points = query_points.reshape(-1, 3)
-
-    return query_points
+    return points
 
 
 def compute_motion_score(tracks, occluded):

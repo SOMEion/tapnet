@@ -32,13 +32,14 @@ from tapnet.utils import model_utils
 from tapnet.utils import motion_scoring
 
 
-def compute_video_motion_score(video_path, checkpoint_path, grid_size=32):
+def compute_video_motion_score(video_path, checkpoint_path, stride=8):
     """Compute motion score from video.
 
     Args:
         video_path: Path to input video file
         checkpoint_path: Path to TAPIR checkpoint (.npy file)
-        grid_size: Grid density (default 32 = 32x32 = 1024 points)
+        stride: Spacing between grid points in pixels (default 8)
+                stride=8 gives ~32x32 grid for 256x256 video
 
     Returns:
         Single scalar motion score (higher = more motion)
@@ -52,9 +53,9 @@ def compute_video_motion_score(video_path, checkpoint_path, grid_size=32):
     params, state = ckpt_state['params'], ckpt_state['state']
     tapir = tapir_model.ParameterizedTAPIR(params, state)
 
-    # Create grid of query points at frame 0
-    query_points = motion_scoring.create_grid_query_points(
-        num_frames, height, width, grid_size=grid_size
+    # Sample grid of query points at frame 0
+    query_points = motion_scoring.sample_grid_points(
+        frame_idx=0, height=height, width=width, stride=stride
     )
 
     # Preprocess video for model
